@@ -593,52 +593,27 @@ def run_phase1_data_with_report(*args, **kwargs):
 
 
 
-def _prompt_bool(message: str, default: bool = True) -> bool:
-    suffix = 'Y/n' if default else 'y/N'
-    raw = input(f"{message} [{suffix}]: ").strip().lower()
-    if raw == '':
-        return default
-    return raw in ('y', 'yes', '1', 'true', 't')
-
-
-def prompt_and_run_phase1():
+def prompt_and_run_phase1_one_input():
     print('=== PHASE1 KRX 입력 UI ===')
     korean_name = input('종목명 입력 (예: 삼성전자): ').strip()
     if not korean_name:
         raise ValueError('종목명은 필수입니다.')
 
-    base_date = input('기준일 YYYY-MM-DD (엔터=오늘): ').strip() or None
-    percentile_basis = (input('percentile_basis (daily/month_end, 엔터=daily): ').strip() or 'daily').lower()
-    event_mode = (input('event_mode (manual/auto, 엔터=manual): ').strip() or 'manual').lower()
-
-    event_date_manual = None
-    auto_event_days = 90
-    if event_mode == 'manual':
-        event_date_manual = input('event_date_manual YYYY-MM-DD (엔터=생략): ').strip() or None
-    else:
-        auto_event_days_raw = input('auto_event_days (엔터=90): ').strip()
-        auto_event_days = int(auto_event_days_raw) if auto_event_days_raw else 90
-
-    include_ev_ebitda = _prompt_bool('include_ev_ebitda', True)
-    include_consensus = _prompt_bool('include_consensus', True)
-    include_outlier_trim = _prompt_bool('include_outlier_trim', True)
-    include_implied_growth = _prompt_bool('include_implied_growth', True)
-    include_eps_normalization = _prompt_bool('include_eps_normalization', True)
-
     result_df, error_log = run_phase1_data_with_report(
         korean_name=korean_name,
-        base_date=base_date,
-        percentile_basis=percentile_basis,
-        event_mode=event_mode,
-        event_date_manual=event_date_manual,
-        auto_event_days=auto_event_days,
-        include_ev_ebitda=include_ev_ebitda,
-        include_consensus=include_consensus,
-        include_outlier_trim=include_outlier_trim,
-        include_implied_growth=include_implied_growth,
-        include_eps_normalization=include_eps_normalization,
+        base_date=None,
+        percentile_basis='daily',
+        event_mode='auto',
+        event_date_manual=None,
+        auto_event_days=90,
+        include_ev_ebitda=True,
+        include_consensus=True,
+        include_outlier_trim=True,
+        include_implied_growth=True,
+        include_eps_normalization=True,
     )
     return result_df, error_log
+
 
 def run_batch_phase1_data(korean_names: List[str], **kwargs):
     rows, error_dict = [], {}
@@ -678,4 +653,4 @@ def run_batch_phase1_data(korean_names: List[str], **kwargs):
 
 
 if __name__ == '__main__':
-    prompt_and_run_phase1()
+    prompt_and_run_phase1_one_input()
