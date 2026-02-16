@@ -720,12 +720,17 @@ def _build_chatgpt_payload(result_df: pd.DataFrame, error_log: List[str]) -> str
 
 
 def _make_band_levels(series: pd.Series) -> List[float]:
+    """증권사 밴드 차트 스타일: 최소~최대 구간을 5등분 레벨로 사용."""
     s = _clean_series(series)
     if s.empty:
         return []
-    q = np.percentile(s, [10, 30, 50, 70, 90])
-    levels = sorted({round(float(v), 2) for v in q if np.isfinite(v) and v > 0})
-    return levels
+    lo, hi = float(s.min()), float(s.max())
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo <= 0 or hi <= 0:
+        return []
+    if hi == lo:
+        return [round(lo, 2)]
+    levels = np.linspace(lo, hi, 5)
+    return [round(float(v), 2) for v in levels]
 
 
 def _plot_band_style(ax, dates, adjusted_price, base_metric, levels: List[float], band_name: str):
@@ -766,12 +771,36 @@ def _prepare_band_chart_data(row: Dict[str, object], error_log: List[str]):
 
     merged = pd.DataFrame(index=price_df.index)
     merged['adjusted_price'] = pd.to_numeric(price_df['close'], errors='coerce')
-    merged = merged.join(fund_df[['PER', 'PBR']], how='left')
-    merged = merged.sort_index().dropna(subset=['adjusted_price'])
 
-    merged['eps_proxy'] = np.where((merged['PER'].notna()) & (merged['PER'] != 0), merged['adjusted_price'] / merged['PER'], np.nan)
-    merged['bps_proxy'] = np.where((merged['PBR'].notna()) & (merged['PBR'] != 0), merged['adjusted_price'] / merged['PBR'], np.nan)
+    # 밴드 레벨 계산용 멀티플 시계열
+    for col in ['PER', 'PBR']:
+        if col in fund_df.columns:
+            merged[col] = pd.to_numeric(fund_df[col], errors='coerce').reindex(merged.index).ffill().bfill()
+        else:
+            merged[col] = np.nan
 
+    # PER 밴드는 EPS(주당이익) 기반으로 생성하는 것이 증권사 밴드 차트와 동일한 형태
+    if 'EPS' in fund_df.columns:
+        merged['eps_base'] = pd.to_numeric(fund_df['EPS'], errors='coerce').reindex(merged.index).ffill().bfill()
+    else:
+        merged['eps_base'] = np.nan
+
+    # PBR 밴드는 BPS(주당순자산) 기반, BPS 부재 시 price/PBR로 대체
+    if 'BPS' in fund_df.columns:
+        merged['bps_base'] = pd.to_numeric(fund_df['BPS'], errors='coerce').reindex(merged.index).ffill().bfill()
+    else:
+        bps_proxy = np.where((merged['PBR'].notna()) & (merged['PBR'] != 0), merged['adjusted_price'] / merged['PBR'], np.nan)
+        merged['bps_base'] = pd.Series(bps_proxy, index=merged.index)
+
+    # 비정상값 제거 + 보간으로 급격한 꺾임 완화
+    for col in ['eps_base', 'bps_base']:
+        s = pd.to_numeric(merged[col], errors='coerce').replace([np.inf, -np.inf], np.nan)
+        if s.notna().sum() > 2:
+            lo, hi = s.quantile(0.01), s.quantile(0.99)
+            s = s.clip(lower=lo, upper=hi)
+        merged[col] = s.interpolate(limit_direction='both')
+
+    merged = merged.dropna(subset=['adjusted_price'])
     return merged
 
 
@@ -790,7 +819,7 @@ def plot_valuation_bands_with_price(result_df: pd.DataFrame, error_log: List[str
         axes[0],
         merged.index,
         merged['adjusted_price'],
-        merged['eps_proxy'],
+        merged['eps_base'],
         per_levels,
         'PER Band',
     )
@@ -798,7 +827,7 @@ def plot_valuation_bands_with_price(result_df: pd.DataFrame, error_log: List[str
         axes[1],
         merged.index,
         merged['adjusted_price'],
-        merged['bps_proxy'],
+        merged['bps_base'],
         pbr_levels,
         'PBR Band',
     )
