@@ -629,15 +629,28 @@ def run_phase1_data(
 
 def run_phase1_data_with_report(*args, **kwargs):
     result_df, error_log = run_phase1_data(*args, **kwargs)
-    print('=== PHASE1 핵심 지표 ===')
-    key_cols = [
-        'ticker', 'resolved_name', 'market', 'base_date', 'base_close', 'base_mcap',
-        'per_ttm', 'pbr_ttm', 'per_fwd_12m', 'ev_ebitda_ttm',
-        'per_5y_percentile', 'per_10y_percentile', 'pbr_5y_percentile', 'pbr_10y_percentile',
+
+    condition_cols = [
+        'ticker', 'resolved_name', 'market', 'base_date',
         'forward_multiple_status', 'consensus_data_status', 'overall_data_quality_score'
     ]
-    key_cols = [c for c in key_cols if c in result_df.columns]
-    print(result_df[key_cols].to_string(index=False))
+    value_cols = [
+        'base_close', 'base_mcap',
+        'per_ttm', 'pbr_ttm', 'per_fwd_12m', 'ev_ebitda_ttm',
+        'per_5y_percentile', 'per_10y_percentile', 'pbr_5y_percentile', 'pbr_10y_percentile',
+        'per_vs_5y_mean_pct', 'per_vs_10y_mean_pct',
+        'pbr_vs_5y_mean_pct', 'pbr_vs_10y_mean_pct',
+        'price_return_6m_pct', 'momentum_gap_pct'
+    ]
+
+    condition_cols = [c for c in condition_cols if c in result_df.columns]
+    value_cols = [c for c in value_cols if c in result_df.columns]
+
+    print('=== PHASE1 실행 조건 ===')
+    print(result_df[condition_cols].to_string(index=False))
+
+    print('\n=== PHASE1 핵심 지표 ===')
+    print(result_df[value_cols].to_string(index=False))
 
     print('\n=== PHASE1 전체 결과(1행) ===')
     print(result_df)
