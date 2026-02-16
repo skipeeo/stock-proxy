@@ -25,7 +25,10 @@ def ensure_dependencies():
 
     if missing:
         print(f'[INFO] Installing missing packages: {missing}')
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', *missing])
+        try:
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', *missing])
+        except subprocess.CalledProcessError as e:
+            print(f'[WARN] 의존성 자동 설치 실패: {e}. Colab에서는 install 셀을 먼저 실행하세요.')
 
 
 ensure_dependencies()
