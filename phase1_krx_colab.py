@@ -5,6 +5,28 @@ import subprocess
 import sys
 
 
+def _repair_numpy_stack():
+    """Colab에서 드물게 발생하는 numpy.rec 누락 상태를 복구한다."""
+    try:
+        importlib.import_module('numpy')
+        importlib.import_module('numpy.rec')
+        return
+    except Exception:
+        print('[WARN] numpy 손상 감지(numpy.rec 누락). numpy/pandas 재설치 시도')
+
+    try:
+        subprocess.check_call([
+            sys.executable, '-m', 'pip', 'install', '-q', '--upgrade', '--force-reinstall',
+            'numpy==1.26.4', 'pandas==2.2.2'
+        ])
+        importlib.invalidate_caches()
+        importlib.import_module('numpy')
+        importlib.import_module('numpy.rec')
+        print('[INFO] numpy/pandas 복구 완료')
+    except Exception as e:
+        print(f'[WARN] numpy/pandas 복구 실패: {e}. Colab에서 런타임 다시 시작 후 install 셀 재실행 권장')
+
+
 def ensure_dependencies():
     required_modules = {
         'numpy': 'numpy',
@@ -29,6 +51,8 @@ def ensure_dependencies():
             subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', *missing])
         except subprocess.CalledProcessError as e:
             print(f'[WARN] 의존성 자동 설치 실패: {e}. Colab에서는 install 셀을 먼저 실행하세요.')
+
+    _repair_numpy_stack()
 
 
 ensure_dependencies()
