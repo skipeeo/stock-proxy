@@ -627,6 +627,49 @@ def run_phase1_data(
     return pd.DataFrame([result]), error_log
 
 
+
+
+def _build_chatgpt_payload(result_df: pd.DataFrame, error_log: List[str]) -> str:
+    row = result_df.iloc[0].to_dict()
+
+    categories = {
+        '종목/기준 정보': ['ticker', 'resolved_name', 'market', 'base_date', 'base_close', 'base_mcap'],
+        '밸류에이션 레벨': ['per_ttm', 'pbr_ttm', 'per_fwd_12m', 'pbr_fwd_12m', 'ev_ebitda_ttm'],
+        '밸류에이션 위치(퍼센타일)': ['per_5y_percentile', 'per_10y_percentile', 'pbr_5y_percentile', 'pbr_10y_percentile', 'ev_ebitda_5y_percentile', 'ev_ebitda_10y_percentile'],
+        '평균 대비 괴리(%)': ['per_vs_5y_mean_pct', 'per_vs_10y_mean_pct', 'pbr_vs_5y_mean_pct', 'pbr_vs_10y_mean_pct', 'ev_ebitda_vs_5y_mean_pct', 'ev_ebitda_vs_10y_mean_pct'],
+        'Regime Shift(5Y vs 10Y)': ['per_regime_shift_pct', 'pbr_regime_shift_pct', 'ev_ebitda_regime_shift_pct'],
+        '이익/성장 해석': ['implied_eps_ttm', 'implied_eps_fwd', 'implied_growth_g', 'assumed_discount_rate_r'],
+        '컨센서스 변화': ['cons_fwd_eps_now', 'cons_fwd_eps_3m_ago', 'cons_fwd_eps_12m_ago', 'cons_fwd_eps_chg_3m_pct', 'cons_fwd_eps_chg_12m_pct', 'consensus_data_status'],
+        '모멘텀/이벤트': ['price_return_6m_pct', 'fwd_eps_change_6m_pct', 'momentum_gap_pct', 'event_date', 'ret_event_minus_5d_to_base_pct', 'ret_event_plus_peak_to_base_pct', 'ret_1m_pct'],
+        '품질/주의사항': ['forward_multiple_status', 'overall_data_quality_score', 'missing_ratio_per_10y', 'missing_ratio_pbr_10y', 'missing_ratio_ev_ebitda_10y', 'data_quality_notes'],
+    }
+
+    lines = []
+    lines.append('## PHASE1 결과 요약 (ChatGPT 붙여넣기용)')
+    for category, cols in categories.items():
+        available = [c for c in cols if c in row]
+        if not available:
+            continue
+        header = '| 항목 | ' + ' | '.join(available) + ' |'
+        sep = '|---|' + '|'.join(['---'] * len(available)) + '|'
+        vals = []
+        for c in available:
+            v = row.get(c)
+            vals.append('None' if v is None else str(v))
+        value_row = '| 값 | ' + ' | '.join(vals) + ' |'
+        lines.append(f'\n### {category}')
+        lines.extend([header, sep, value_row])
+
+    lines.append('\n### 실행 로그')
+    if error_log:
+        for msg in error_log:
+            lines.append(f'- {msg}')
+    else:
+        lines.append('- 없음')
+
+    return '\n'.join(lines)
+
+
 def run_phase1_data_with_report(*args, **kwargs):
     result_df, error_log = run_phase1_data(*args, **kwargs)
 
@@ -654,6 +697,10 @@ def run_phase1_data_with_report(*args, **kwargs):
 
     print('\n=== PHASE1 전체 결과(1행) ===')
     print(result_df)
+
+    chatgpt_payload = _build_chatgpt_payload(result_df, error_log)
+    print('\n=== ChatGPT 붙여넣기 전용 ===')
+    print(chatgpt_payload)
 
     print('\n=== 실행 로그(참고) ===')
     if not error_log:
