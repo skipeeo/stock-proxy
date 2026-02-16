@@ -201,6 +201,68 @@ def fetch_forward_multiples_yf(ticker: str, market: str, error_log: List[str]):
             error_log.append(f'yfinance forward multiple fetch failed: {e}')
             return {'per_fwd_12m': None, 'pbr_fwd_12m': None, 'forward_multiple_status': 'failed'}
 
+
+def fetch_forward_multiples_naver(ticker: str, error_log: List[str]):
+    url = f'https://finance.naver.com/item/main.naver?code={ticker}'
+    headers = {'User-Agent': 'Mozilla/5.0'}
+
+    for attempt in range(MAX_RETRY + 1):
+        try:
+            resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers=headers)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, 'lxml')
+
+            per_fwd = None
+            for tr in soup.select('tr'):
+                cells = [c.get_text(' ', strip=True) for c in tr.find_all(['th', 'td'])]
+                for idx, cell in enumerate(cells):
+                    key = cell.replace(' ', '')
+                    if '추정PER' in key and idx + 1 < len(cells):
+                        per_fwd = _safe_float(cells[idx + 1])
+                        if per_fwd is not None:
+                            break
+                if per_fwd is not None:
+                    break
+
+            if per_fwd is None:
+                text = soup.get_text(' ', strip=True)
+                m = re.search(r'추정\s*PER[^0-9\-]*([0-9]+(?:\.[0-9]+)?)', text)
+                if m:
+                    per_fwd = _safe_float(m.group(1))
+
+            return {
+                'per_fwd_12m': per_fwd,
+                'pbr_fwd_12m': None,
+                'forward_multiple_status': 'ok' if per_fwd is not None else 'none',
+            }
+        except requests.Timeout:
+            if attempt < MAX_RETRY:
+                continue
+            error_log.append('Naver Finance timeout (forward multiple)')
+        except Exception as e:
+            if attempt < MAX_RETRY:
+                continue
+            error_log.append(f'Naver Finance forward multiple fetch failed: {e}')
+
+    return {'per_fwd_12m': None, 'pbr_fwd_12m': None, 'forward_multiple_status': 'failed'}
+
+
+def fetch_forward_multiples(ticker: str, market: str, error_log: List[str]):
+    yf_data = fetch_forward_multiples_yf(ticker, market, error_log)
+    if yf_data['per_fwd_12m'] is not None:
+        return yf_data
+
+    error_log.append('yfinance forwardPE 부재/실패: Naver Finance fallback 시도')
+    naver_data = fetch_forward_multiples_naver(ticker, error_log)
+
+    if naver_data['per_fwd_12m'] is not None:
+        naver_data['forward_multiple_status'] = 'ok'
+        return naver_data
+
+    if yf_data['forward_multiple_status'] == 'failed' and naver_data['forward_multiple_status'] == 'failed':
+        return {'per_fwd_12m': None, 'pbr_fwd_12m': None, 'forward_multiple_status': 'failed'}
+    return {'per_fwd_12m': None, 'pbr_fwd_12m': None, 'forward_multiple_status': 'none'}
+
 def fetch_consensus_fwd_eps_fnguide(ticker: str, error_log: List[str]):
     url = f'https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp?pGB=1&gicode=A{ticker}'
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -379,8 +441,9 @@ def run_phase1_data(
     include_implied_growth: bool = True,
     include_eps_normalization: bool = True,
     winsorize_percentile: int = DEFAULT_WINSORIZE_PERCENTILE,
-):
+): 
     error_log: List[str] = []
+    error_log.append('API KEY 불필요: 공개 웹/시세 데이터 소스만 사용')
     base_day_raw = _normalize_date(base_date)
     ticker, resolved_name, market = resolve_ticker_interactive(korean_name)
 
@@ -407,7 +470,7 @@ def run_phase1_data(
     pbr_ttm = _safe_float(pbr_series.dropna().iloc[-1]) if not pbr_series.dropna().empty else None
     eps_ttm = _safe_float(eps_series.dropna().iloc[-1]) if not eps_series.dropna().empty else None
 
-    forward_data = fetch_forward_multiples_yf(ticker, market, error_log)
+    forward_data = fetch_forward_multiples(ticker, market, error_log)
     per_fwd_12m = forward_data['per_fwd_12m']
 
     cons_data = {'cons_fwd_eps_now': None, 'cons_fwd_eps_3m_ago': None, 'cons_fwd_eps_12m_ago': None, 'cons_fwd_eps_chg_3m_pct': None, 'cons_fwd_eps_chg_12m_pct': None, 'cons_data_date': None, 'consensus_data_status': 'none', 'cons_note': 'include_consensus=False'}
@@ -516,6 +579,16 @@ def run_phase1_data(
     }
 
     return pd.DataFrame([result]), error_log
+
+
+def run_phase1_data_with_report(*args, **kwargs):
+    result_df, error_log = run_phase1_data(*args, **kwargs)
+    print('=== PHASE1 결과(1행) ===')
+    print(result_df)
+    print('\n=== error_log ===')
+    for msg in error_log:
+        print('-', msg)
+    return result_df, error_log
 
 
 def run_batch_phase1_data(korean_names: List[str], **kwargs):
