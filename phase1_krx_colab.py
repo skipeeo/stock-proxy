@@ -629,94 +629,194 @@ def run_phase1_data(
 
 
 
+def _fmt_value(v):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return 'None'
+    if isinstance(v, float):
+        return f'{v:,.4f}'
+    return str(v)
+
+
+def _percentile_comment(metric_name: str, pct: Optional[float]) -> str:
+    if pct is None:
+        return f'{metric_name}: 퍼센타일 데이터가 없어 해석 불가'
+    if pct >= 80:
+        return f'{metric_name}: 과거 대비 상단(고평가 가능성 구간, {pct:.1f}%)'
+    if pct >= 60:
+        return f'{metric_name}: 평균 대비 다소 높은 구간({pct:.1f}%)'
+    if pct >= 40:
+        return f'{metric_name}: 중립 구간({pct:.1f}%)'
+    if pct >= 20:
+        return f'{metric_name}: 평균 대비 낮은 구간({pct:.1f}%)'
+    return f'{metric_name}: 과거 대비 하단(저평가 가능성 구간, {pct:.1f}%)'
+
+
+def _print_vertical_metrics(title: str, row: Dict[str, object], fields: List[Tuple[str, str]]):
+    print(f'\n=== {title} ===')
+    for key, label in fields:
+        print(f'- {label}: {_fmt_value(row.get(key))}')
+
+
 def _build_chatgpt_payload(result_df: pd.DataFrame, error_log: List[str]) -> str:
     row = result_df.iloc[0].to_dict()
-
     categories = {
         '종목/기준 정보': ['ticker', 'resolved_name', 'market', 'base_date', 'base_close', 'base_mcap'],
-        '밸류에이션 레벨': ['per_ttm', 'pbr_ttm', 'per_fwd_12m', 'pbr_fwd_12m', 'ev_ebitda_ttm'],
-        '밸류에이션 위치(퍼센타일)': ['per_5y_percentile', 'per_10y_percentile', 'pbr_5y_percentile', 'pbr_10y_percentile', 'ev_ebitda_5y_percentile', 'ev_ebitda_10y_percentile'],
-        '평균 대비 괴리(%)': ['per_vs_5y_mean_pct', 'per_vs_10y_mean_pct', 'pbr_vs_5y_mean_pct', 'pbr_vs_10y_mean_pct', 'ev_ebitda_vs_5y_mean_pct', 'ev_ebitda_vs_10y_mean_pct'],
-        'Regime Shift(5Y vs 10Y)': ['per_regime_shift_pct', 'pbr_regime_shift_pct', 'ev_ebitda_regime_shift_pct'],
-        '이익/성장 해석': ['implied_eps_ttm', 'implied_eps_fwd', 'implied_growth_g', 'assumed_discount_rate_r'],
-        '컨센서스 변화': ['cons_fwd_eps_now', 'cons_fwd_eps_3m_ago', 'cons_fwd_eps_12m_ago', 'cons_fwd_eps_chg_3m_pct', 'cons_fwd_eps_chg_12m_pct', 'consensus_data_status'],
-        '모멘텀/이벤트': ['price_return_6m_pct', 'fwd_eps_change_6m_pct', 'momentum_gap_pct', 'event_date', 'ret_event_minus_5d_to_base_pct', 'ret_event_plus_peak_to_base_pct', 'ret_1m_pct'],
-        '품질/주의사항': ['forward_multiple_status', 'overall_data_quality_score', 'missing_ratio_per_10y', 'missing_ratio_pbr_10y', 'missing_ratio_ev_ebitda_10y', 'data_quality_notes'],
+        '밸류에이션 레벨': ['per_ttm', 'pbr_ttm', 'per_fwd_12m', 'ev_ebitda_ttm'],
+        '밸류에이션 위치(퍼센타일)': ['per_10y_percentile', 'pbr_10y_percentile', 'ev_ebitda_10y_percentile'],
+        '평균 대비 괴리(%)': ['per_vs_10y_mean_pct', 'pbr_vs_10y_mean_pct', 'ev_ebitda_vs_10y_mean_pct'],
+        '모멘텀/이벤트': ['price_return_6m_pct', 'momentum_gap_pct', 'event_date', 'ret_event_minus_5d_to_base_pct', 'ret_1m_pct'],
+        '품질/주의사항': ['forward_multiple_status', 'consensus_data_status', 'overall_data_quality_score', 'data_quality_notes'],
     }
 
-    lines = []
-    lines.append('## PHASE1 결과 요약 (ChatGPT 붙여넣기용)')
+    lines = ['## PHASE1 결과 요약 (ChatGPT 붙여넣기용)']
     for category, cols in categories.items():
-        available = [c for c in cols if c in row]
-        if not available:
-            continue
-        header = '| 항목 | ' + ' | '.join(available) + ' |'
-        sep = '|---|' + '|'.join(['---'] * len(available)) + '|'
-        vals = []
-        for c in available:
-            v = row.get(c)
-            vals.append('None' if v is None else str(v))
-        value_row = '| 값 | ' + ' | '.join(vals) + ' |'
         lines.append(f'\n### {category}')
-        lines.extend([header, sep, value_row])
+        for c in cols:
+            if c not in row:
+                continue
+            lines.append(f'- {c}: {_fmt_value(row.get(c))}')
+
+    lines.append('\n### 현재 위치 해설')
+    lines.append(f"- {_percentile_comment('PER', row.get('per_10y_percentile'))}")
+    lines.append(f"- {_percentile_comment('PBR', row.get('pbr_10y_percentile'))}")
+    lines.append(f"- {_percentile_comment('EV/EBITDA', row.get('ev_ebitda_10y_percentile'))}")
 
     lines.append('\n### 실행 로그')
     if error_log:
-        for msg in error_log:
-            lines.append(f'- {msg}')
+        lines.extend([f'- {msg}' for msg in error_log])
     else:
         lines.append('- 없음')
-
     return '\n'.join(lines)
+
+
+def _get_band_position(current: Optional[float], min_v: Optional[float], max_v: Optional[float]) -> Optional[float]:
+    if current is None or min_v is None or max_v is None or max_v == min_v:
+        return None
+    return (current - min_v) / (max_v - min_v) * 100
+
+
+def _plot_band_and_price(ax, x_dates, price_values, multiple_values, current, min_v, mean_v, max_v, title, pct_10y):
+    if len(x_dates) == 0:
+        ax.text(0.5, 0.5, f'{title}: 데이터 없음', ha='center', va='center')
+        ax.set_axis_off()
+        return
+
+    if min_v is not None and max_v is not None:
+        ax.fill_between(x_dates, np.full(len(x_dates), min_v), np.full(len(x_dates), max_v), color='lightblue', alpha=0.25, label='10Y band(min~max)')
+
+    ax.plot(x_dates, multiple_values, color='tab:blue', linewidth=1.4, label=f'{title} 시계열')
+    if mean_v is not None:
+        ax.axhline(mean_v, color='tab:blue', linestyle='--', linewidth=1.0, label='10Y mean')
+    if current is not None:
+        ax.scatter([x_dates[-1]], [current], color='red', s=45, zorder=5, label='현재값')
+
+    band_pos = _get_band_position(current, min_v, max_v)
+    band_txt = f'밴드 내 위치 {band_pos:.1f}%' if band_pos is not None else '밴드 위치 계산 불가'
+    pct_txt = f'10년 퍼센타일 {pct_10y:.1f}%' if pct_10y is not None else '10년 퍼센타일 N/A'
+    ax.set_title(f'{title} | {band_txt} | {pct_txt}')
+    ax.grid(alpha=0.2)
+
+    ax2 = ax.twinx()
+    ax2.plot(x_dates, price_values, color='gray', alpha=0.45, linewidth=1.1, label='주가(원)')
+
+    l1, lb1 = ax.get_legend_handles_labels()
+    l2, lb2 = ax2.get_legend_handles_labels()
+    ax.legend(l1 + l2, lb1 + lb2, loc='upper left', fontsize=8)
+
+
+def _prepare_chart_data(row: Dict[str, object], error_log: List[str]):
+    ticker = row.get('ticker')
+    market = row.get('market')
+    base_date = row.get('base_date')
+    if not ticker or not base_date:
+        return pd.DataFrame(), pd.DataFrame()
+
+    base_day = datetime.strptime(base_date, '%Y-%m-%d').date()
+    start_day = base_day - relativedelta(years=10)
+
+    price_df = fetch_price_series_krx(ticker, start_day, base_day)
+    mult_df = fetch_historical_per_pbr_krx(ticker, base_day, years=10, percentile_basis='daily')
+    mult_df = mult_df.rename(columns={'PER': 'PER', 'PBR': 'PBR'})
+
+    # EV/EBITDA 시계열(가능 시)
+    if not price_df.empty and not mult_df.empty:
+        fin = fetch_financials_for_ev_ebitda(ticker, market, error_log)
+        shares = None
+        if row.get('base_mcap') not in (None, 0) and row.get('base_close') not in (None, 0):
+            shares = row.get('base_mcap') / row.get('base_close')
+        if shares and fin.get('net_debt') is not None and fin.get('ebitda') not in (None, 0):
+            mcap_series = price_df['close'] * shares
+            mult_df['EV_EBITDA'] = compute_ev_ebitda_series(mcap_series, fin['net_debt'], fin['ebitda']).reindex(mult_df.index)
+        else:
+            mult_df['EV_EBITDA'] = np.nan
+    return price_df, mult_df
+
+
+def plot_valuation_bands_with_price(result_df: pd.DataFrame, error_log: List[str]):
+    row = result_df.iloc[0].to_dict()
+    price_df, mult_df = _prepare_chart_data(row, error_log)
+    if price_df.empty or mult_df.empty:
+        print('[안내] 차트 생성을 위한 10년 시계열 데이터가 부족합니다.')
+        return
+
+    merged = pd.DataFrame(index=price_df.index)
+    merged['price'] = pd.to_numeric(price_df['close'], errors='coerce')
+    merged = merged.join(mult_df[['PER', 'PBR', 'EV_EBITDA']], how='left')
+    merged = merged.sort_index().dropna(subset=['price'])
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12), constrained_layout=True)
+    _plot_band_and_price(axes[0], merged.index, merged['price'].values, merged['PER'].values,
+                         row.get('per_ttm'), row.get('per_10y_min'), row.get('per_10y_mean'), row.get('per_10y_max'),
+                         'PER 밴드', row.get('per_10y_percentile'))
+    _plot_band_and_price(axes[1], merged.index, merged['price'].values, merged['PBR'].values,
+                         row.get('pbr_ttm'), row.get('pbr_10y_min'), row.get('pbr_10y_mean'), row.get('pbr_10y_max'),
+                         'PBR 밴드', row.get('pbr_10y_percentile'))
+
+    if merged['EV_EBITDA'].dropna().empty:
+        axes[2].text(0.5, 0.5, 'EV/EBITDA 시계열 없음', ha='center', va='center')
+        axes[2].set_axis_off()
+    else:
+        _plot_band_and_price(axes[2], merged.index, merged['price'].values, merged['EV_EBITDA'].values,
+                             row.get('ev_ebitda_ttm'), row.get('ev_ebitda_10y_min'), row.get('ev_ebitda_10y_mean'), row.get('ev_ebitda_10y_max'),
+                             'EV/EBITDA 밴드', row.get('ev_ebitda_10y_percentile'))
+    plt.show()
 
 
 def run_phase1_data_with_report(*args, **kwargs):
     result_df, error_log = run_phase1_data(*args, **kwargs)
+    row = result_df.iloc[0].to_dict()
 
-    condition_cols = [
-        'ticker', 'resolved_name', 'market', 'base_date',
-        'forward_multiple_status', 'consensus_data_status', 'overall_data_quality_score'
-    ]
-    value_cols = [
-        'base_close', 'base_mcap',
-        'per_ttm', 'pbr_ttm', 'per_fwd_12m', 'ev_ebitda_ttm',
-        'per_5y_percentile', 'per_10y_percentile', 'pbr_5y_percentile', 'pbr_10y_percentile',
-        'per_vs_5y_mean_pct', 'per_vs_10y_mean_pct',
-        'pbr_vs_5y_mean_pct', 'pbr_vs_10y_mean_pct',
-        'price_return_6m_pct', 'momentum_gap_pct'
-    ]
+    _print_vertical_metrics('PHASE1 실행 조건', row, [
+        ('ticker', '티커'), ('resolved_name', '종목명'), ('market', '시장'), ('base_date', '기준일'),
+        ('forward_multiple_status', 'Forward 멀티플 상태'), ('consensus_data_status', '컨센서스 상태'),
+        ('overall_data_quality_score', '데이터 품질 점수'),
+    ])
 
-    condition_cols = [c for c in condition_cols if c in result_df.columns]
-    value_cols = [c for c in value_cols if c in result_df.columns]
+    _print_vertical_metrics('PHASE1 핵심 지표', row, [
+        ('base_close', '기준 종가'), ('base_mcap', '기준 시가총액'), ('per_ttm', 'PER(TTM)'),
+        ('pbr_ttm', 'PBR(TTM)'), ('per_fwd_12m', 'PER(Fwd 12M)'), ('ev_ebitda_ttm', 'EV/EBITDA(TTM)'),
+        ('per_10y_percentile', 'PER 10Y 퍼센타일'), ('pbr_10y_percentile', 'PBR 10Y 퍼센타일'), ('ev_ebitda_10y_percentile', 'EV/EBITDA 10Y 퍼센타일'),
+    ])
 
-    print('=== PHASE1 실행 조건 ===')
-    print(result_df[condition_cols].to_string(index=False))
+    print('\n=== 지표 현재 위치 해설 ===')
+    print(f"- {_percentile_comment('PER', row.get('per_10y_percentile'))}")
+    print(f"- {_percentile_comment('PBR', row.get('pbr_10y_percentile'))}")
+    print(f"- {_percentile_comment('EV/EBITDA', row.get('ev_ebitda_10y_percentile'))}")
 
-    print('\n=== PHASE1 핵심 지표 ===')
-    print(result_df[value_cols].to_string(index=False))
-
-    print('\n=== PHASE1 전체 결과(1행) ===')
-    print(result_df)
-
-    chatgpt_payload = _build_chatgpt_payload(result_df, error_log)
     print('\n=== ChatGPT 붙여넣기 전용 ===')
-    print(chatgpt_payload)
+    print(_build_chatgpt_payload(result_df, error_log))
+
+    print('\n=== 밸류에이션 밴드 + 10년 주가 위치 차트 ===')
+    plot_valuation_bands_with_price(result_df, error_log)
 
     print('\n=== 실행 로그(참고) ===')
-    if not error_log:
-        print('- 없음')
-    else:
+    if error_log:
         for msg in error_log:
             print('-', msg)
-
-    hard_errors = [m for m in error_log if any(k in m.lower() for k in ['failed', 'timeout', 'fatal'])]
-    if hard_errors:
-        print('\n[주의] 일부 데이터 수집 실패가 있습니다. 위 로그를 확인하세요.')
     else:
-        print('\n[안내] 치명적 오류 없이 계산이 완료되었습니다.')
+        print('- 없음')
+
     return result_df, error_log
-
-
 
 
 def prompt_and_run_phase1_one_input():
