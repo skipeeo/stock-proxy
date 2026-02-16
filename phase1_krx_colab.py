@@ -443,7 +443,6 @@ def run_phase1_data(
     winsorize_percentile: int = DEFAULT_WINSORIZE_PERCENTILE,
 ): 
     error_log: List[str] = []
-    error_log.append('API KEY 불필요: 공개 웹/시세 데이터 소스만 사용')
     base_day_raw = _normalize_date(base_date)
     ticker, resolved_name, market = resolve_ticker_interactive(korean_name)
 
@@ -585,9 +584,19 @@ def run_phase1_data_with_report(*args, **kwargs):
     result_df, error_log = run_phase1_data(*args, **kwargs)
     print('=== PHASE1 결과(1행) ===')
     print(result_df)
-    print('\n=== error_log ===')
-    for msg in error_log:
-        print('-', msg)
+
+    print('\n=== 실행 로그(참고) ===')
+    if not error_log:
+        print('- 없음')
+    else:
+        for msg in error_log:
+            print('-', msg)
+
+    hard_errors = [m for m in error_log if any(k in m.lower() for k in ['failed', 'timeout', 'fatal'])]
+    if hard_errors:
+        print('\n[주의] 일부 데이터 수집 실패가 있습니다. 위 로그를 확인하세요.')
+    else:
+        print('\n[안내] 치명적 오류 없이 계산이 완료되었습니다.')
     return result_df, error_log
 
 
