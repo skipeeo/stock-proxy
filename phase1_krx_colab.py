@@ -14,6 +14,7 @@ def ensure_dependencies():
         'bs4': 'beautifulsoup4',
         'dateutil': 'python-dateutil',
         'pykrx': 'pykrx',
+        'matplotlib': 'matplotlib',
     }
     missing = []
     for module_name, package_name in required_modules.items():
@@ -41,6 +42,7 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 from dateutil.relativedelta import relativedelta
 from pykrx import stock
+import matplotlib.pyplot as plt
 
 REQUEST_TIMEOUT = 10
 MAX_RETRY = 1
