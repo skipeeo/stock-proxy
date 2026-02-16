@@ -46,6 +46,7 @@ from bs4 import BeautifulSoup
 from dateutil.relativedelta import relativedelta
 from pykrx import stock
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 
 REQUEST_TIMEOUT = 10
 MAX_RETRY = 1
@@ -694,96 +695,89 @@ def _build_chatgpt_payload(result_df: pd.DataFrame, error_log: List[str]) -> str
     return '\n'.join(lines)
 
 
-def _get_band_position(current: Optional[float], min_v: Optional[float], max_v: Optional[float]) -> Optional[float]:
-    if current is None or min_v is None or max_v is None or max_v == min_v:
-        return None
-    return (current - min_v) / (max_v - min_v) * 100
+def _make_band_levels(series: pd.Series) -> List[float]:
+    s = _clean_series(series)
+    if s.empty:
+        return []
+    q = np.percentile(s, [10, 30, 50, 70, 90])
+    levels = sorted({round(float(v), 2) for v in q if np.isfinite(v) and v > 0})
+    return levels
 
 
-def _plot_band_and_price(ax, x_dates, price_values, multiple_values, current, min_v, mean_v, max_v, title, pct_10y):
-    if len(x_dates) == 0:
-        ax.text(0.5, 0.5, f'{title}: 데이터 없음', ha='center', va='center')
+def _plot_band_style(ax, dates, adjusted_price, base_metric, levels: List[float], band_name: str):
+    if len(dates) == 0 or len(levels) == 0:
+        ax.text(0.5, 0.5, f'{band_name}: 데이터 부족', ha='center', va='center')
         ax.set_axis_off()
         return
 
-    if min_v is not None and max_v is not None:
-        ax.fill_between(x_dates, np.full(len(x_dates), min_v), np.full(len(x_dates), max_v), color='lightblue', alpha=0.25, label='10Y band(min~max)')
+    ax.plot(dates, adjusted_price, color='#2f7ed8', linewidth=1.8, label='수정주가')
+    palette = ['#35a7b8', '#8fb95f', '#e0a83a', '#cc3d3d', '#9b59b6']
+    for i, lvl in enumerate(levels):
+        band_price = base_metric * lvl
+        ax.plot(dates, band_price, linewidth=1.6, color=palette[i % len(palette)], label=f'{lvl:.2f}X')
 
-    ax.plot(x_dates, multiple_values, color='tab:blue', linewidth=1.4, label=f'{title} 시계열')
-    if mean_v is not None:
-        ax.axhline(mean_v, color='tab:blue', linestyle='--', linewidth=1.0, label='10Y mean')
-    if current is not None:
-        ax.scatter([x_dates[-1]], [current], color='red', s=45, zorder=5, label='현재값')
-
-    band_pos = _get_band_position(current, min_v, max_v)
-    band_txt = f'밴드 내 위치 {band_pos:.1f}%' if band_pos is not None else '밴드 위치 계산 불가'
-    pct_txt = f'10년 퍼센타일 {pct_10y:.1f}%' if pct_10y is not None else '10년 퍼센타일 N/A'
-    ax.set_title(f'{title} | {band_txt} | {pct_txt}')
+    ax.set_title(f'{band_name}', loc='left', fontsize=11, fontweight='bold')
     ax.grid(alpha=0.2)
-
-    ax2 = ax.twinx()
-    ax2.plot(x_dates, price_values, color='gray', alpha=0.45, linewidth=1.1, label='주가(원)')
-
-    l1, lb1 = ax.get_legend_handles_labels()
-    l2, lb2 = ax2.get_legend_handles_labels()
-    ax.legend(l1 + l2, lb1 + lb2, loc='upper left', fontsize=8)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{int(y):,}'))
+    ax.legend(loc='lower left', ncol=3, frameon=False)
 
 
-def _prepare_chart_data(row: Dict[str, object], error_log: List[str]):
+def _prepare_band_chart_data(row: Dict[str, object], error_log: List[str]):
     ticker = row.get('ticker')
-    market = row.get('market')
     base_date = row.get('base_date')
     if not ticker or not base_date:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame()
 
     base_day = datetime.strptime(base_date, '%Y-%m-%d').date()
     start_day = base_day - relativedelta(years=10)
 
     price_df = fetch_price_series_krx(ticker, start_day, base_day)
-    mult_df = fetch_historical_per_pbr_krx(ticker, base_day, years=10, percentile_basis='daily')
-    mult_df = mult_df.rename(columns={'PER': 'PER', 'PBR': 'PBR'})
+    if price_df.empty:
+        return pd.DataFrame()
 
-    # EV/EBITDA 시계열(가능 시)
-    if not price_df.empty and not mult_df.empty:
-        fin = fetch_financials_for_ev_ebitda(ticker, market, error_log)
-        shares = None
-        if row.get('base_mcap') not in (None, 0) and row.get('base_close') not in (None, 0):
-            shares = row.get('base_mcap') / row.get('base_close')
-        if shares and fin.get('net_debt') is not None and fin.get('ebitda') not in (None, 0):
-            mcap_series = price_df['close'] * shares
-            mult_df['EV_EBITDA'] = compute_ev_ebitda_series(mcap_series, fin['net_debt'], fin['ebitda']).reindex(mult_df.index)
-        else:
-            mult_df['EV_EBITDA'] = np.nan
-    return price_df, mult_df
+    fund_df = fetch_historical_per_pbr_krx(ticker, base_day, years=10, percentile_basis='daily')
+    if fund_df.empty:
+        error_log.append('PER/PBR 밴드용 펀더멘털 시계열 없음')
+        return pd.DataFrame()
+
+    merged = pd.DataFrame(index=price_df.index)
+    merged['adjusted_price'] = pd.to_numeric(price_df['close'], errors='coerce')
+    merged = merged.join(fund_df[['PER', 'PBR']], how='left')
+    merged = merged.sort_index().dropna(subset=['adjusted_price'])
+
+    merged['eps_proxy'] = np.where((merged['PER'].notna()) & (merged['PER'] != 0), merged['adjusted_price'] / merged['PER'], np.nan)
+    merged['bps_proxy'] = np.where((merged['PBR'].notna()) & (merged['PBR'] != 0), merged['adjusted_price'] / merged['PBR'], np.nan)
+
+    return merged
 
 
 def plot_valuation_bands_with_price(result_df: pd.DataFrame, error_log: List[str]):
     row = result_df.iloc[0].to_dict()
-    price_df, mult_df = _prepare_chart_data(row, error_log)
-    if price_df.empty or mult_df.empty:
+    merged = _prepare_band_chart_data(row, error_log)
+    if merged.empty:
         print('[안내] 차트 생성을 위한 10년 시계열 데이터가 부족합니다.')
         return
 
-    merged = pd.DataFrame(index=price_df.index)
-    merged['price'] = pd.to_numeric(price_df['close'], errors='coerce')
-    merged = merged.join(mult_df[['PER', 'PBR', 'EV_EBITDA']], how='left')
-    merged = merged.sort_index().dropna(subset=['price'])
+    per_levels = _make_band_levels(merged['PER'])
+    pbr_levels = _make_band_levels(merged['PBR'])
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 12), constrained_layout=True)
-    _plot_band_and_price(axes[0], merged.index, merged['price'].values, merged['PER'].values,
-                         row.get('per_ttm'), row.get('per_10y_min'), row.get('per_10y_mean'), row.get('per_10y_max'),
-                         'PER 밴드', row.get('per_10y_percentile'))
-    _plot_band_and_price(axes[1], merged.index, merged['price'].values, merged['PBR'].values,
-                         row.get('pbr_ttm'), row.get('pbr_10y_min'), row.get('pbr_10y_mean'), row.get('pbr_10y_max'),
-                         'PBR 밴드', row.get('pbr_10y_percentile'))
-
-    if merged['EV_EBITDA'].dropna().empty:
-        axes[2].text(0.5, 0.5, 'EV/EBITDA 시계열 없음', ha='center', va='center')
-        axes[2].set_axis_off()
-    else:
-        _plot_band_and_price(axes[2], merged.index, merged['price'].values, merged['EV_EBITDA'].values,
-                             row.get('ev_ebitda_ttm'), row.get('ev_ebitda_10y_min'), row.get('ev_ebitda_10y_mean'), row.get('ev_ebitda_10y_max'),
-                             'EV/EBITDA 밴드', row.get('ev_ebitda_10y_percentile'))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), constrained_layout=True)
+    _plot_band_style(
+        axes[0],
+        merged.index,
+        merged['adjusted_price'],
+        merged['eps_proxy'],
+        per_levels,
+        'PER Band',
+    )
+    _plot_band_style(
+        axes[1],
+        merged.index,
+        merged['adjusted_price'],
+        merged['bps_proxy'],
+        pbr_levels,
+        'PBR Band',
+    )
     plt.show()
 
 
@@ -811,7 +805,7 @@ def run_phase1_data_with_report(*args, **kwargs):
     print('\n=== ChatGPT 붙여넣기 전용 ===')
     print(_build_chatgpt_payload(result_df, error_log))
 
-    print('\n=== 밸류에이션 밴드 + 10년 주가 위치 차트 ===')
+    print('\n=== Band Chart (수정주가 + PER/PBR 밴드) ===')
     plot_valuation_bands_with_price(result_df, error_log)
 
     print('\n=== 실행 로그(참고) ===')
