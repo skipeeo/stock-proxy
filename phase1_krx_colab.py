@@ -247,6 +247,45 @@ def fetch_forward_multiples_naver(ticker: str, error_log: List[str]):
     return {'per_fwd_12m': None, 'pbr_fwd_12m': None, 'forward_multiple_status': 'failed'}
 
 
+def fetch_current_multiples_naver(ticker: str, error_log: List[str]):
+    url = f'https://finance.naver.com/item/main.naver?code={ticker}'
+    headers = {'User-Agent': 'Mozilla/5.0'}
+
+    for attempt in range(MAX_RETRY + 1):
+        try:
+            resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers=headers)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, 'lxml')
+
+            def _extract_by_label(label: str):
+                for tr in soup.select('tr'):
+                    cells = [c.get_text(' ', strip=True) for c in tr.find_all(['th', 'td'])]
+                    for idx, cell in enumerate(cells):
+                        key = cell.replace(' ', '')
+                        if label in key and idx + 1 < len(cells):
+                            v = _safe_float(cells[idx + 1])
+                            if v is not None:
+                                return v
+                text_blob = soup.get_text(' ', strip=True)
+                m = re.search(rf'{label}[^0-9\-]*([0-9]+(?:\.[0-9]+)?)', text_blob)
+                return _safe_float(m.group(1)) if m else None
+
+            return {
+                'per_ttm': _extract_by_label('PER(배)'),
+                'pbr_ttm': _extract_by_label('PBR(배)'),
+            }
+        except requests.Timeout:
+            if attempt < MAX_RETRY:
+                continue
+            error_log.append('Naver Finance timeout (current PER/PBR)')
+        except Exception as e:
+            if attempt < MAX_RETRY:
+                continue
+            error_log.append(f'Naver Finance current PER/PBR fetch failed: {e}')
+
+    return {'per_ttm': None, 'pbr_ttm': None}
+
+
 def fetch_forward_multiples(ticker: str, market: str, error_log: List[str]):
     yf_data = fetch_forward_multiples_yf(ticker, market, error_log)
     if yf_data['per_fwd_12m'] is not None:
@@ -467,6 +506,14 @@ def run_phase1_data(
 
     per_ttm = _safe_float(per_series.dropna().iloc[-1]) if not per_series.dropna().empty else None
     pbr_ttm = _safe_float(pbr_series.dropna().iloc[-1]) if not pbr_series.dropna().empty else None
+    if per_ttm is None or pbr_ttm is None:
+        naver_current = fetch_current_multiples_naver(ticker, error_log)
+        if per_ttm is None and naver_current['per_ttm'] is not None:
+            per_ttm = naver_current['per_ttm']
+            error_log.append('PER TTM을 Naver Finance 현재값으로 보완')
+        if pbr_ttm is None and naver_current['pbr_ttm'] is not None:
+            pbr_ttm = naver_current['pbr_ttm']
+            error_log.append('PBR TTM을 Naver Finance 현재값으로 보완')
     eps_ttm = _safe_float(eps_series.dropna().iloc[-1]) if not eps_series.dropna().empty else None
 
     forward_data = fetch_forward_multiples(ticker, market, error_log)
@@ -582,7 +629,17 @@ def run_phase1_data(
 
 def run_phase1_data_with_report(*args, **kwargs):
     result_df, error_log = run_phase1_data(*args, **kwargs)
-    print('=== PHASE1 결과(1행) ===')
+    print('=== PHASE1 핵심 지표 ===')
+    key_cols = [
+        'ticker', 'resolved_name', 'market', 'base_date', 'base_close', 'base_mcap',
+        'per_ttm', 'pbr_ttm', 'per_fwd_12m', 'ev_ebitda_ttm',
+        'per_5y_percentile', 'per_10y_percentile', 'pbr_5y_percentile', 'pbr_10y_percentile',
+        'forward_multiple_status', 'consensus_data_status', 'overall_data_quality_score'
+    ]
+    key_cols = [c for c in key_cols if c in result_df.columns]
+    print(result_df[key_cols].to_string(index=False))
+
+    print('\n=== PHASE1 전체 결과(1행) ===')
     print(result_df)
 
     print('\n=== 실행 로그(참고) ===')
